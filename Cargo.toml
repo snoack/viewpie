@@ -1,0 +1,28 @@
+[package]
+name = "viewpie"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Camera wall for Raspberry Pi, on one atomic KMS commit"
+
+[dependencies]
+drm = "0.15"
+# yaml-rust2 rather than serde: serde_yaml is deprecated and its successors
+# unmaintained, and walking the document by hand is what lets a mistake in the
+# layout name the slot it is in rather than a serde path.
+yaml-rust2 = "0.13"
+# Already built, as drm depends on it. Named here for poll(2), which the drm
+# crate does not wrap: waiting on the card's fd by hand meant declaring poll
+# as extern "C", and getting nfds_t's width wrong there reads as a display
+# that never flips rather than as a bad argument.
+rustix = { version = "1", features = ["event"] }
+# Also already built, as other crates depend on it. Named here for sigwait and
+# pthread_sigmask, which rustix does not wrap, so that a wall told to stop
+# exits at once, and hands back its CEC address first.
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.71"
+
+[profile.release]
+opt-level = 2

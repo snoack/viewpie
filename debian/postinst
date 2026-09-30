@@ -1,0 +1,46 @@
+#!/bin/sh
+set -e
+
+VP_USER=viewpie
+
+case "$1" in
+configure)
+    # A system user rather than a login account: the wall needs the video and
+    # render groups for DRM and V4L2, and nothing else.
+    if ! getent passwd "$VP_USER" >/dev/null; then
+        adduser --system --group --no-create-home \
+                --home /nonexistent --shell /usr/sbin/nologin \
+                --gecos "Viewpie camera wall" "$VP_USER"
+    fi
+    for grp in video render; do
+        if getent group "$grp" >/dev/null; then
+            adduser "$VP_USER" "$grp" >/dev/null 2>&1 || true
+        fi
+    done
+
+    # RTSP urls embed credentials, so the configuration is private and is not
+    # a conffile: an upgrade must never prompt about it or overwrite it.
+    # Private is the file, not the directory, which anyone may list so that
+    # a shell can complete the file's name for them. Set again on every
+    # upgrade, which is what opens up the 0750 earlier versions made it.
+    install -d -m 0755 -o "$VP_USER" -g "$VP_USER" /etc/viewpie
+    if [ ! -e /etc/viewpie/viewpie.yaml ]; then
+        install -m 0600 -o "$VP_USER" -g "$VP_USER" \
+            /usr/share/viewpie/viewpie.yaml /etc/viewpie/viewpie.yaml
+    fi
+
+    # debhelper enables and starts the service below, as Debian expects of a
+    # package shipping a daemon. The shipped configuration is all comments,
+    # so it stops again immediately saying no wall is configured, which
+    # leaves describing one as the only step. Said on a first install only
+    # ("$2" is the version being upgraded from, and is empty otherwise).
+    if [ -z "$2" ]; then
+        echo "Describe your wall in /etc/viewpie/viewpie.yaml, then:"
+        echo "  systemctl restart viewpie"
+    fi
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

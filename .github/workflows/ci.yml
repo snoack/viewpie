@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The tests need libav to build against, but no hardware: nothing here
+      # opens a DRM device or a camera. Not libdrm either, which the binary
+      # links nothing of: the drm crate speaks to the kernel by ioctl.
+      - name: Install what the crate builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libavcodec-dev libavformat-dev libavutil-dev \
+            libclang-dev clang
+      - run: cargo test --locked
+      - run: cargo fmt --check
+      # Not -D warnings: the generated libav bindings carry a pile of them
+      # that no amount of care here would remove, and a lint that cannot be
+      # satisfied is one people learn to ignore.
+      - run: cargo clippy --locked --all-targets
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      # Both architectures, because they disagree: every libav struct offset
+      # differs between them, and a 32-bit build has caught mistakes a 64-bit
+      # one accepted.
+      matrix:
+        arch: [armhf, arm64]
+    steps:
+      - uses: actions/checkout@v7
+      - name: The package must build
+        run: ./scripts/build-deb.sh ${{ matrix.arch }}
+      # The image installs that package rather than repeating what it
+      # contains, so a change to debian/control can break it. Checking it here
+      # means finding that out on the branch rather than at tag time.
+      - uses: docker/setup-qemu-action@v4
+      - name: The image must build
+        run: ./scripts/build-image.sh ${{ matrix.arch }}

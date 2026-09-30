@@ -1,0 +1,160 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Declared per job rather than here: only the jobs that publish need more than
+# to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install what the crate builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libavcodec-dev libavformat-dev libavutil-dev \
+            libclang-dev clang
+      - run: cargo test --locked
+
+  deb:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [armhf, arm64]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the versions against the tag
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$tag" ]; then
+            echo "Cargo.toml version $version does not match tag $tag" >&2
+            exit 1
+          fi
+          # The changelog ships verbatim, so an ungated one would describe a
+          # different release than the package being built.
+          changelog=$(sed -n '1s/^viewpie (\(.*\)-[^-]*).*/\1/p' debian/changelog)
+          if [ "$changelog" != "$tag" ]; then
+            echo "debian/changelog version $changelog does not match tag $tag" >&2
+            exit 1
+          fi
+      - name: Build the package
+        run: ./scripts/build-deb.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-${{ matrix.arch }}
+          path: dist/*.deb
+
+  image:
+    # Takes the packages the deb job built rather than building its own: the
+    # image installs the same file a Pi installs, and building it twice is
+    # both slower and a chance for the two to differ.
+    needs: deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+      # apt has to run as the target architecture to resolve the package's
+      # dependencies, which is not something cross-compiling helps with.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # Without these the action emits only "0.1.0": no "latest", and no
+          # "0.1" to follow patch releases. flavor keeps latest off a
+          # pre-release tag such as v0.2.0-rc1.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+      # One line per architecture, so keep these in step with the deb job's
+      # matrix above: an architecture added there and not here is built and
+      # then left out of the manifest without complaint.
+      - name: Name the package each architecture installs
+        id: debs
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          revision=$(sed -n "1s/^viewpie ($version-\([^)]*\)).*/\1/p" debian/changelog)
+          echo "armhf=dist/viewpie_${version}-${revision}_armhf.deb" >> "$GITHUB_OUTPUT"
+          echo "arm64=dist/viewpie_${version}-${revision}_arm64.deb" >> "$GITHUB_OUTPUT"
+      # One build per architecture rather than a single multi-platform build:
+      # each installs a different .deb, and build-args cannot vary by platform
+      # within one build.
+      #
+      # No tags on either: each is pushed by digest alone, and a registry
+      # refuses a tagged ref pushed that way ("can't push tagged ref ... by
+      # digest"). Tagging is the join below, which is the only step that knows
+      # about both architectures. Passing steps.meta.outputs.tags here instead
+      # is what failed the first time this workflow ran, and the two settings
+      # contradict each other rather than one overriding the other.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm/v7
+          build-args: DEB=${{ steps.debs.outputs.armhf }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+        id: armhf
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          build-args: DEB=${{ steps.debs.outputs.arm64 }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+        id: arm64
+      # The two builds pushed by digest; this is what gives them a tag, so
+      # that pulling viewpie:0.1.0 on a Pi 3 and a Pi 5 each gets its own
+      # architecture.
+      #
+      # One imagetools call per tag, and the tags arrive newline separated, so
+      # the loop reads them a line at a time rather than letting the shell
+      # split on spaces as well.
+      - name: Join them under one tag
+        run: |
+          printf '%s\n' '${{ steps.meta.outputs.tags }}' | while read -r tag; do
+            [ -n "$tag" ] || continue
+            docker buildx imagetools create -t "$tag" \
+              "ghcr.io/${{ github.repository }}@${{ steps.armhf.outputs.digest }}" \
+              "ghcr.io/${{ github.repository }}@${{ steps.arm64.outputs.digest }}"
+          done
+
+  publish:
+    needs: [deb, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --generate-notes

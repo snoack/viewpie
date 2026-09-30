@@ -1,0 +1,65 @@
+# A camera wall. Nothing here is active: uncomment what you need, or write
+# your own. Until then the service stops at startup and says so, rather than
+# showing a wall of cameras that do not exist.
+#
+# The simplest wall names its cameras and lists them once each. They fill the
+# smallest square grid that holds them, in order, left to right and top to
+# bottom. The names are what the log calls each camera:
+
+# feeds:
+#   porch: rtsp://192.0.2.10:7447/aBcDeFgHiJkLmNoP
+#   yard: rtsp://192.0.2.10:7447/qRsTuVwXyZ012345
+#
+# displays:
+#   - viewports:
+#       - feeds: [porch]
+#       - feeds: [yard]
+
+# Everything else, for when that is not enough. The three settings at the top
+# are defaults every display inherits, and any display may override them.
+#
+# rotation_interval: 8        # seconds a viewport holds each of its feeds
+# spacing: 1                  # background pixels between viewports
+# background: "#000000"
+#
+# # Disconnect the cameras while nobody can see the wall: the display is
+# # unplugged, or its television is off or on another input (over HDMI-CEC).
+# pause_off_screen: true
+#
+# # Every camera, once. Each must be shown somewhere, and any number of
+# # viewports, on either display, may show the same one.
+# feeds:
+#   driveway: rtsp://192.0.2.10:7447/driveway
+#   porch:
+#     url: rtsp://192.0.2.10:7447/porch
+#     # A sharper stream for showing it fullscreen from the remote.
+#     fullscreen_url: rtsp://192.0.2.10:7447/porch_hd
+#   yard: rtsp://192.0.2.10:7447/yard
+#   garage: rtsp://192.0.2.10:7447/garage
+#   street: rtsp://192.0.2.10:7447/street
+#
+# displays:
+#   - connector: HDMI-A-1     # required once a second display is configured
+#     mode: 1920x1080@60      # omit to keep the display's mode, or take its preferred
+#     spacing: 2              # this display, rather than the default above
+#     background: "#101010"   # likewise
+#
+#     # The wall as a picture. A name repeated over a square block of cells
+#     # spans them; "." leaves a cell as background.
+#     layout: |
+#       a a b
+#       a a c
+#       d e .
+#
+#     viewports:
+#       - slot: a
+#         feeds: [driveway]
+#       - slot: b
+#         feeds: [porch]
+#       - slot: c
+#         feeds: [yard]
+#       - slot: d
+#         feeds: [street]         # also in e's rotation, decoded once
+#       - slot: e
+#         rotation_interval: 20
+#         feeds: [garage, street]

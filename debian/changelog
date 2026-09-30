@@ -1,0 +1,24 @@
+viewpie (0.1.0-1) unstable; urgency=medium
+
+  * Initial release. A camera wall for a Raspberry Pi: RTSP cameras decoded
+    with ffmpeg, in hardware where the board has a decoder for the codec, and
+    every viewport put on screen in one atomic KMS commit, so each advances
+    at its camera's own rate.
+  * Cameras are named once and shown wherever a viewport names them, in a
+    grid or a drawn layout, on one display or two; a camera shown in several
+    places is decoded once. A viewport may rotate through several cameras.
+  * A camera that drops out is reconnected on a backoff, and its viewport
+    goes dark meanwhile. A stream larger than the display can show is
+    refused as it connects.
+  * With pause_off_screen, the cameras are disconnected while a display is
+    unplugged, or its television is in standby or on another input, which
+    the television says over HDMI-CEC.
+  * The television's remote drives the wall over HDMI-CEC: left and right
+    step the rotating viewports, down and up show one camera fullscreen and
+    go through the others, back returns to the grid, as does ten minutes
+    with nothing pressed. A camera may give a sharper stream for fullscreen
+    as fullscreen_url.
+  * Runs as its own unprivileged user, from the Debian package or the
+    container image.
+
+ -- Sebastian Noack <sebastian.noack@gmail.com>  Wed, 30 Sep 2026 00:00:00 +0000

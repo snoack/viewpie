@@ -1,0 +1,60 @@
+[Unit]
+Description=Camera wall on KMS overlay planes
+After=network-online.target
+Wants=network-online.target
+# A wall that keeps restarting still shows every healthy camera in between,
+# so it never gives up: a unit systemd has abandoned shows nothing at all.
+# Without this, the default of five starts in ten seconds would stop it for
+# good. The backoff below is what keeps a wall that cannot stay up from
+# cycling every few seconds.
+StartLimitIntervalSec=0
+
+[Service]
+# DRM master belongs to whoever opens the card first, so nothing else may hold
+# it: this conflicts with any other wall on the same display.
+Type=simple
+User=viewpie
+Group=viewpie
+SupplementaryGroups=video render
+ExecStart=/usr/bin/viewpie --config /etc/viewpie/viewpie.yaml
+# on-failure, not always: exit 2 is a configuration the wall cannot start
+# from, such as a missing file, YAML that does not parse, or a layout that
+# does not add up. Restarting cannot fix any of those, and retrying every
+# RestartSec buries the one message that explains the problem. Declaring 2 a
+# success stops the unit there and leaves the error legible, while a crash or
+# any other failure still restarts.
+Restart=on-failure
+SuccessExitStatus=2
+# 5s before the first restart, growing over five steps to a minute if they
+# keep coming (measured on viewwall: 5, 8, 14, 23, 36, 60). A transient fault
+# recovers as fast as it always did; a persistent one stops hammering the
+# decoder and filling the journal, which a flat 5s does not: measured here at
+# 14 restarts and 65 journal lines a minute, indefinitely. Older systemd
+# ignores the two ramp settings and retries at a flat 5s, which is why that
+# floor is not lower.
+RestartSec=5
+RestartSteps=5
+RestartMaxDelaySec=60
+
+# The feed list holds credentials, and the process needs nothing else from the
+# filesystem.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/viewpie
+DeviceAllow=char-drm rw
+DeviceAllow=char-video4linux rw
+# The media node beside the decoder, which is its own device class rather than
+# part of video4linux: H.265 on a Pi 4 or Pi 5 is stateless and driven through
+# the Request API on /dev/media*, so without this those boards decode it in
+# software. The class rather than a node, which is just as well: the numbering
+# is registration order and moves between boots.
+DeviceAllow=char-media rw
+# HDMI-CEC, which is how the television's remote reaches the wall, and how a
+# wall with pause_off_screen hears it switch to another input. /dev/cec* is
+# group video, like the card.
+DeviceAllow=char-cec rw
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+VP_USER=viewpie
+
+case "$1" in
+purge)
+    # The configuration holds camera credentials, and purge is the one action
+    # that means "leave nothing behind". Removing the package alone keeps it,
+    # so reinstalling finds the wall as it was.
+    #
+    # Only what postinst created: the directory goes if it is empty after the
+    # default file, so anything else put there is left for its owner to deal
+    # with rather than deleted on their behalf.
+    rm -f /etc/viewpie/viewpie.yaml
+    rmdir /etc/viewpie 2>/dev/null || true
+
+    # Guarded on the command rather than on Depends: adduser is a dependency
+    # of the package, and by purge time the package may already be removed,
+    # so the tools it pulled in are not guaranteed to still be here.
+    if command -v deluser >/dev/null 2>&1; then
+        if getent passwd "$VP_USER" >/dev/null; then
+            deluser --system "$VP_USER" >/dev/null 2>&1 || true
+        fi
+        # And the group of the same name. adduser --system --group made both,
+        # but deluser --system removes only the user unless configured
+        # otherwise, so the group would outlive the package that created it.
+        if getent group "$VP_USER" >/dev/null; then
+            delgroup --system "$VP_USER" >/dev/null 2>&1 || true
+        fi
+    fi
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

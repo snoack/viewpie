@@ -1,0 +1,68 @@
+# Cross-builds viewpie's Debian package for a Pi, on whatever machine runs
+# Docker.
+#
+# Cross-compiled rather than emulated: a qemu build of both architectures takes
+# tens of minutes where this takes seconds, and the Pis themselves are
+# deliberately kept free of toolchains: a Pi 3 has 741MB of RAM and a 371MB
+# /tmp that a cargo build fills.
+#
+#   docker build --build-arg ARCH=armhf -f Dockerfile.build -t viewpie:armhf .
+#
+# scripts/build-deb.sh does this for both architectures and copies the
+# packages out.
+
+FROM debian:trixie-slim
+
+ARG ARCH=arm64
+
+# dpkg's foreign architecture is what lets the target's -dev packages sit
+# beside the host's compiler, so pkg-config and the linker find the right
+# libraries.
+RUN set -eux; \
+    case "$ARCH" in \
+      armhf) GNU=arm-linux-gnueabihf;  RUST=armv7-unknown-linux-gnueabihf ;; \
+      arm64) GNU=aarch64-linux-gnu;    RUST=aarch64-unknown-linux-gnu ;; \
+      *) echo "ARCH must be armhf or arm64" >&2; exit 2 ;; \
+    esac; \
+    echo "$ARCH $GNU $RUST" > /etc/viewpie-target; \
+    dpkg --add-architecture "$ARCH"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl debhelper dpkg-dev fakeroot pkg-config \
+        "crossbuild-essential-$ARCH" \
+        "libavcodec-dev:$ARCH" \
+        "libavformat-dev:$ARCH" \
+        "libavutil-dev:$ARCH" \
+        libclang-dev clang; \
+    rm -rf /var/lib/apt/lists/*
+
+# rustup rather than Debian's rustc: only rustup ships the cross std
+# libraries, and trixie's compiler trails far enough behind that ordinary
+# crates refuse to build against it. None of it reaches the package: the
+# binary links only the C libraries above, and those come from Debian.
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN set -eux; \
+    read ARCH GNU RUST < /etc/viewpie-target; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain stable --target "$RUST"
+
+WORKDIR /src
+COPY . .
+
+# -a names the target architecture, which is what sends dh_shlibdeps to the
+# target's libraries rather than the build machine's: get that wrong and the
+# package's dependencies describe the wrong system.
+#
+# -d because the Rust toolchain came from rustup, which dpkg cannot see.
+RUN set -eux; \
+    read ARCH GNU RUST < /etc/viewpie-target; \
+    export PKG_CONFIG_PATH="/usr/lib/$GNU/pkgconfig"; \
+    export PKG_CONFIG_ALLOW_CROSS=1; \
+    export "CARGO_TARGET_$(echo "$RUST" | tr 'a-z-' 'A-Z_')_LINKER=$GNU-gcc"; \
+    export "CC_$(echo "$RUST" | tr '-' '_')=$GNU-gcc"; \
+    export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=/ -I/usr/include/$GNU"; \
+    export VIEWPIE_RUST_TARGET="$RUST"; \
+    dpkg-buildpackage -us -uc -b -d -a"$ARCH"; \
+    mkdir -p /out; \
+    cp ../viewpie_*.deb /out/

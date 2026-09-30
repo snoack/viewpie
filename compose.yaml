@@ -1,0 +1,44 @@
+# Runs the wall in a container, with the restart policy the systemd unit gives
+# the Debian package.
+#
+#   docker compose up -d
+#
+# The feed list stays on the host and is mounted read-only: RTSP urls embed
+# credentials and have no business inside an image. The container runs as
+# uid 100 in group video (44), so the file must be readable by one of those.
+#
+# To run an image built here rather than a released one, replace the image
+# with the tag scripts/build-image.sh produced, such as viewpie:arm64.
+services:
+  viewpie:
+    image: ghcr.io/snoack/viewpie:latest
+    restart: unless-stopped
+    # Keep the lines for your board and delete the rest. The numbering depends
+    # on what else the board registered first, so the README has a command
+    # that names these for the board it runs on.
+    devices:
+      # The screen. /dev/dri on its own hands over every card and leaves the
+      # choice to viewpie, which picks the one with a connected connector.
+      - /dev/dri/card0      # Pi 3
+      - /dev/dri/card1      # Pi 4, Pi 5 (card0 there is the render-only v3d)
+      # The decoders. Drop them both to decode everything in software.
+      - /dev/video10        # H.264: Pi 3, Pi 4
+      - /dev/video19        # H.265: Pi 4, Pi 5
+      # H.265 is stateless and driven through the Request API, so it needs the
+      # media node beside its decoder as well. Which number that is is handed
+      # out in registration order and moves between boots -- measured on one
+      # Pi 4 as media0, then media1, then media0 again -- so pass every one
+      # the board has rather than the one that happened to be right when you
+      # looked. Only those, though: docker refuses to start a container that
+      # names a device which does not exist. A Pi 4 has four, a Pi 5 three.
+      - /dev/media0         # Pi 4, Pi 5
+      - /dev/media1
+      - /dev/media2
+      - /dev/media3         # Pi 4 only
+      # HDMI-CEC, which is how the television's remote reaches the wall, and
+      # how pause_off_screen hears it switch to another input. One per HDMI
+      # port; viewpie picks the one wired to its display.
+      - /dev/cec0
+      - /dev/cec1           # Pi 4, Pi 5
+    volumes:
+      - /etc/viewpie:/etc/viewpie:ro

@@ -1,0 +1,49 @@
+#!/usr/bin/make -f
+
+# cargo builds the binary; debhelper packages it. dh_shlibdeps then derives
+# the runtime dependencies from what the binary actually links, which is a
+# list nobody has to remember to update.
+#
+# Not dh-cargo: that wants the dependency tree packaged as librust-*-dev and
+# pins it to whatever the distribution shipped. Cargo fetches its own, and the
+# result links the same system libraries either way.
+
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+# DEB_HOST_ARCH and DEB_BUILD_ARCH, to tell a cross build from a native one.
+include /usr/share/dpkg/architecture.mk
+
+# Set when cross-compiling; empty for a native build, where cargo puts its
+# output straight in target/release.
+RUST_TARGET := $(VIEWPIE_RUST_TARGET)
+BIN := $(CURDIR)/target/$(if $(RUST_TARGET),$(RUST_TARGET)/,)release/viewpie
+
+%:
+	dh $@
+
+# A cross build with no triple would put a host binary in target/release and
+# package it under the target's architecture: a .deb that installs on a Pi and
+# cannot run. dpkg knows both architectures, so it can say so instead.
+override_dh_auto_build:
+ifeq ($(RUST_TARGET),)
+	@if [ "$(DEB_HOST_ARCH)" != "$(DEB_BUILD_ARCH)" ]; then \
+		echo "cross-building $(DEB_BUILD_ARCH) -> $(DEB_HOST_ARCH) with no" \
+		     "VIEWPIE_RUST_TARGET set; use scripts/build-deb.sh" >&2; \
+		exit 2; \
+	fi
+endif
+	cargo build --release --locked $(if $(RUST_TARGET),--target $(RUST_TARGET),)
+
+override_dh_auto_install:
+	install -D -m 0755 $(BIN) \
+		debian/viewpie/usr/bin/viewpie
+	install -D -m 0644 examples/viewpie.yaml \
+		debian/viewpie/usr/share/viewpie/viewpie.yaml
+
+# The test suite needs no hardware, but it does need a display to do anything
+# useful, so it is run in CI rather than during a package build.
+override_dh_auto_test:
+
+# Cargo's output is not a directory dh knows how to clean.
+override_dh_auto_clean:
+	rm -rf target
