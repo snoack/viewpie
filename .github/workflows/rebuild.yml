@@ -1,0 +1,48 @@
+name: rebuild
+
+# The latest release's image rebuilt twice a month on a newer base: the
+# packages it installs from Debian and the Pi archive get security fixes
+# whether or not viewpie changes. The same dates as the other images on the
+# server, so those sharing a base pull the same version of it.
+on:
+  schedule:
+    - cron: '17 7 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # GitHub disables a public repository's scheduled workflows after 60 days
+  # without activity, which is exactly when the scheduled rebuild matters.
+  # Re-enabling the workflow from its own scheduled run keeps it alive.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the schedule enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/rebuild.yml/enable"
+
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.latest.outputs.tag }}
+    steps:
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      from-release: true
