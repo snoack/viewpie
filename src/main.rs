@@ -765,9 +765,9 @@ fn run(config: &Config) -> Result<(), String> {
         .feeds
         .iter()
         .map(|f| {
-            f.fullscreen_url.as_ref().map(|_| {
-                Arc::new(Source::on_demand(&format!("{} (fullscreen)", f.name)))
-            })
+            f.fullscreen_url
+                .as_ref()
+                .map(|_| Arc::new(Source::on_demand(&format!("{} (fullscreen)", f.name))))
         })
         .collect();
 
