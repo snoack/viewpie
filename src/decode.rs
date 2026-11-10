@@ -202,7 +202,11 @@ impl Decoder {
             // pads to its alignment, but that rounds to a multiple of 16 to
             // 128, which the limits are multiples of too, so padding cannot
             // take a picture over one.
-            let par = stream_codecpar(fmt, idx);
+            let par = viewpie_stream_codecpar(fmt, idx);
+            if par.is_null() {
+                avformat_close_input(&mut fmt);
+                return Err("could not read video stream codec parameters".into());
+            }
             let size = ((*par).width.max(0) as u32, (*par).height.max(0) as u32);
             if size.0 > limit.0 || size.1 > limit.1 {
                 avformat_close_input(&mut fmt);
@@ -640,11 +644,4 @@ fn v4l2_device(matches: impl Fn(&str) -> bool) -> bool {
         .any(|dev| {
             std::fs::read_to_string(dev.path().join("name")).is_ok_and(|name| matches(name.trim()))
         })
-}
-
-// The structs come from libav's own headers via bindgen, so these are plain
-// field accesses rather than pointer arithmetic over a hand-written offset.
-unsafe fn stream_codecpar(fmt: *mut AVFormatContext, idx: c_int) -> *const AVCodecParameters {
-    let stream = *(*fmt).streams.offset(idx as isize);
-    (*stream).codecpar
 }

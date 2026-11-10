@@ -30,6 +30,17 @@ pub struct Feed {
     /// A sharper stream of the same camera, for showing it across the whole
     /// screen, where the one for a viewport would be scaled up soft.
     pub fullscreen_url: Option<String>,
+    /// The rectangle of the decoded frame to show, in pixels.
+    pub crop: Option<Crop>,
+}
+
+/// A rectangle in a decoded frame, in pixels from its top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -186,13 +197,14 @@ fn feeds(y: &Yaml) -> Result<Vec<Feed>, String> {
                     name,
                     url: url.to_string(),
                     fullscreen_url: None,
+                    crop: None,
                 });
             }
             let what = format!("the feed '{name}'");
             if v.as_hash().is_none() {
                 return Err(format!("{what} must be a url, or a mapping with one"));
             }
-            only(v, &what, &["url", "fullscreen_url"])?;
+            only(v, &what, &["url", "fullscreen_url", "crop"])?;
             let url = |key: &str| match &v[key] {
                 Yaml::BadValue => Ok(None),
                 y => y
@@ -200,9 +212,14 @@ fn feeds(y: &Yaml) -> Result<Vec<Feed>, String> {
                     .map(|s| Some(s.to_string()))
                     .ok_or_else(|| format!("{what}'s {key} must be a url")),
             };
+            let crop = match &v["crop"] {
+                Yaml::BadValue => None,
+                value => Some(crop(value, &format!("{what}'s crop"))?),
+            };
             Ok(Feed {
                 url: url("url")?.ok_or_else(|| format!("{what} needs a url"))?,
                 fullscreen_url: url("fullscreen_url")?,
+                crop,
                 name,
             })
         })
@@ -481,6 +498,32 @@ fn whole(y: &Yaml, what: &str) -> Result<u32, String> {
     Ok(n as u32)
 }
 
+/// Read a crop rectangle as four non-negative pixel values: x, y, width, height.
+fn crop(y: &Yaml, what: &str) -> Result<Crop, String> {
+    let values = y
+        .as_vec()
+        .filter(|values| values.len() == 4)
+        .ok_or_else(|| format!("{what} must be [x, y, w, h] in pixels"))?;
+    let value = |index, name| {
+        let what = format!("{what}'s {name}");
+        let n = number(&values[index], &what)?;
+        if n.fract() != 0.0 {
+            return Err(format!("{what} must be a whole number of pixels"));
+        }
+        whole(&values[index], &what)
+    };
+    let crop = Crop {
+        x: value(0, "x")?,
+        y: value(1, "y")?,
+        width: value(2, "w")?,
+        height: value(3, "h")?,
+    };
+    if crop.width == 0 || crop.height == 0 {
+        return Err(format!("{what}'s w and h must be greater than zero"));
+    }
+    Ok(crop)
+}
+
 /// How long a rotating viewport holds each feed, given in seconds.
 ///
 /// Duration::from_secs_f64 panics outright on a negative or a NaN, so a typo
@@ -527,9 +570,46 @@ displays:
         );
         assert_eq!(d.background, DEFAULT_BACKGROUND);
         assert!(d.mode.is_none(), "the display keeps the mode it is in");
-        assert_eq!(d.layout.size, 2, "two feeds infer a 2x2 grid");
+        assert_eq!(
+            (d.layout.width, d.layout.height),
+            (2, 2),
+            "two feeds infer a 2x2 grid"
+        );
         assert_eq!(d.viewports[1].rotation_interval, DEFAULT_ROTATION_INTERVAL);
         assert!(!c.pause_off_screen, "a wall decodes whether watched or not");
+    }
+
+    #[test]
+    fn a_feed_accepts_a_crop_rectangle_in_pixels() {
+        let c = Config::parse(
+            "feeds:\n  a: {url: rtsp://a, crop: [12, 24, 640, 360]}\ndisplays:\n  - viewports: [{feeds: [a]}]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.feeds[0].crop,
+            Some(Crop {
+                x: 12,
+                y: 24,
+                width: 640,
+                height: 360,
+            })
+        );
+    }
+
+    #[test]
+    fn a_crop_rectangle_must_have_four_nonnegative_values_and_nonzero_size() {
+        for (crop, expected) in [
+            ("[1, 2, 3]", "must be [x, y, w, h]"),
+            ("[-1, 2, 3, 4]", "positive number of pixels"),
+            ("[1.5, 2, 3, 4]", "whole number of pixels"),
+            ("[1, 2, 0, 4]", "w and h must be greater than zero"),
+        ] {
+            let err = Config::parse(&format!(
+                "feeds:\n  a: {{url: rtsp://a, crop: {crop}}}\ndisplays:\n  - viewports: [{{feeds: [a]}}]\n"
+            ))
+            .unwrap_err();
+            assert!(err.contains(expected), "{crop}: {err}");
+        }
     }
 
     #[test]
@@ -560,9 +640,10 @@ feeds:
   f: rtsp://f
 displays:
   - layout: |
-      a a b
-      a a c
-      d e f
+      a a b b
+      a a c c
+      d d e e
+      d d f f
     viewports:
       - {slot: e, feeds: [e]}
       - {slot: a, feeds: [a]}
@@ -577,7 +658,8 @@ displays:
         // Listed in a different order than the picture: the slot decides.
         assert_eq!(d.layout.slots[d.viewports[0].slot].0, "e");
         assert_eq!(d.layout.slots[d.viewports[1].slot].0, "a");
-        assert_eq!(d.layout.slots[d.viewports[1].slot].1.span, 2);
+        let cell = d.layout.slots[d.viewports[1].slot].1;
+        assert_eq!((cell.width, cell.height), (2, 2));
     }
 
     #[test]

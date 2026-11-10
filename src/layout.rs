@@ -10,9 +10,9 @@
 //! ```
 //!
 //! Which is a 2x2 viewport, four single viewports, and one cell left as background.
-//! Nothing says where anything is or how big it is, because the picture
-//! already does, and it cannot express a wall with a hole in it or two
-//! viewports claiming the same cell, because a cell holds one name.
+//! Rectangular blocks can be split further, including into two half-height
+//! viewports. Nothing says where anything is or how big it is, because the
+//! picture already does, and a cell holds one name.
 //!
 //! Without a picture the viewports fill the smallest square grid that holds
 //! them, in order, one cell each.
@@ -22,14 +22,16 @@
 pub struct Cell {
     pub col: u32,
     pub row: u32,
-    /// Cells spanned in each direction. Spans are square, so one number.
-    pub span: u32,
+    /// Cells spanned horizontally and vertically.
+    pub width: u32,
+    pub height: u32,
 }
 
-/// A parsed layout: the grid's size, and where each named slot sits.
+/// A parsed layout: the grid's dimensions, and where each named slot sits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
-    pub size: u32,
+    pub width: u32,
+    pub height: u32,
     pub slots: Vec<(String, Cell)>,
 }
 
@@ -37,7 +39,7 @@ impl Layout {
     /// Read a layout picture, or say what is wrong with it.
     ///
     /// The errors name the slot rather than a line and column: a wall is read
-    /// as a picture, and "slot 'b' spans 1x2" is what the author can see.
+    /// as a picture, and the slot's shape is what the author can see.
     pub fn parse(text: &str) -> Result<Layout, String> {
         let rows: Vec<Vec<&str>> = text
             .lines()
@@ -61,13 +63,6 @@ impl Layout {
                 ));
             }
         }
-        if rows.len() != width {
-            return Err(format!(
-                "the layout must be square: it is {width} wide and {} tall",
-                rows.len()
-            ));
-        }
-
         // Every cell a name occupies, in the order they were written.
         let mut names: Vec<&str> = Vec::new();
         for row in &rows {
@@ -84,7 +79,8 @@ impl Layout {
         }
 
         Ok(Layout {
-            size: width as u32,
+            width: width as u32,
+            height: rows.len() as u32,
             slots,
         })
     }
@@ -104,16 +100,21 @@ impl Layout {
                     Cell {
                         col: i % size,
                         row: i / size,
-                        span: 1,
+                        width: 1,
+                        height: 1,
                     },
                 )
             })
             .collect();
-        Layout { size, slots }
+        Layout {
+            width: size,
+            height: size,
+            slots,
+        }
     }
 }
 
-/// Where a name sits, having checked it is a filled square block.
+/// Where a name sits, having checked it is a filled rectangular block.
 fn block(rows: &[Vec<&str>], name: &str) -> Result<Cell, String> {
     let mut min_col = usize::MAX;
     let mut min_row = usize::MAX;
@@ -136,24 +137,20 @@ fn block(rows: &[Vec<&str>], name: &str) -> Result<Cell, String> {
     let w = max_col - min_col + 1;
     let h = max_row - min_row + 1;
 
-    if w != h {
-        return Err(format!(
-            "slot '{name}' covers {w}x{h} cells; a span must be square"
-        ));
-    }
     if count != w * h {
-        // The name appears in two places, or its block has a hole: either way
-        // the cells it covers are not one solid square.
+        // The name appears in two places, or its rectangle has a hole: either
+        // way the cells it covers are not one solid rectangle.
         return Err(format!(
-            "slot '{name}' is not one solid block: it covers {count} cells \
-             inside a {w}x{h} square"
+            "slot '{name}' is not one solid rectangle: it covers {count} cells \
+             inside a {w}x{h} rectangle"
         ));
     }
 
     Ok(Cell {
         col: min_col as u32,
         row: min_row as u32,
-        span: w as u32,
+        width: w as u32,
+        height: h as u32,
     })
 }
 
@@ -161,26 +158,26 @@ fn block(rows: &[Vec<&str>], name: &str) -> Result<Cell, String> {
 mod tests {
     use super::*;
 
-    fn slots(layout: &Layout) -> Vec<(&str, u32, u32, u32)> {
+    fn slots(layout: &Layout) -> Vec<(&str, u32, u32, u32, u32)> {
         layout
             .slots
             .iter()
-            .map(|(n, c)| (n.as_str(), c.col, c.row, c.span))
+            .map(|(n, c)| (n.as_str(), c.col, c.row, c.width, c.height))
             .collect()
     }
 
     #[test]
     fn a_picture_places_and_sizes_every_slot() {
         let layout = Layout::parse("a a b\na a c\nd e .").unwrap();
-        assert_eq!(layout.size, 3);
+        assert_eq!((layout.width, layout.height), (3, 3));
         assert_eq!(
             slots(&layout),
             [
-                ("a", 0, 0, 2),
-                ("b", 2, 0, 1),
-                ("c", 2, 1, 1),
-                ("d", 0, 2, 1),
-                ("e", 1, 2, 1),
+                ("a", 0, 0, 2, 2),
+                ("b", 2, 0, 1, 1),
+                ("c", 2, 1, 1, 1),
+                ("d", 0, 2, 1, 1),
+                ("e", 1, 2, 1, 1),
             ]
         );
     }
@@ -188,27 +185,50 @@ mod tests {
     #[test]
     fn a_dot_leaves_a_cell_as_background() {
         let layout = Layout::parse(". a\nb .").unwrap();
-        assert_eq!(slots(&layout), [("a", 1, 0, 1), ("b", 0, 1, 1)]);
+        assert_eq!(slots(&layout), [("a", 1, 0, 1, 1), ("b", 0, 1, 1, 1)]);
     }
 
     #[test]
-    fn an_oblong_span_is_refused() {
-        let err = Layout::parse("a b b\nc d d\ne f g").unwrap_err();
-        assert!(err.contains("'b' covers 2x1"), "{err}");
+    fn rectangular_slots_are_accepted() {
+        let layout = Layout::parse("a b\na c").unwrap();
+        assert_eq!(
+            slots(&layout),
+            [("a", 0, 0, 1, 2), ("b", 1, 0, 1, 1), ("c", 1, 1, 1, 1),]
+        );
+    }
+
+    #[test]
+    fn one_of_four_equal_sections_can_be_split_in_two() {
+        let layout = Layout::parse("a a b b\na a c c\nd d e e\nd d e e").unwrap();
+        assert_eq!((layout.width, layout.height), (4, 4));
+        assert_eq!(
+            slots(&layout),
+            [
+                ("a", 0, 0, 2, 2),
+                ("b", 2, 0, 2, 1),
+                ("c", 2, 1, 2, 1),
+                ("d", 0, 2, 2, 2),
+                ("e", 2, 2, 2, 2),
+            ]
+        );
+        assert_eq!(
+            layout.slots[1].1.width * layout.slots[1].1.height
+                + layout.slots[2].1.width * layout.slots[2].1.height,
+            layout.slots[0].1.width * layout.slots[0].1.height
+        );
     }
 
     #[test]
     fn a_split_slot_is_refused() {
-        // Opposite corners of a square: the bounding box is square, so only
-        // counting the cells inside it catches this.
-        let err = Layout::parse("a b\nc a").unwrap_err();
-        assert!(err.contains("not one solid block"), "{err}");
+        // Opposite corners of a rectangle leave holes in the bounding box.
+        let err = Layout::parse("a b c\nd e a").unwrap_err();
+        assert!(err.contains("not one solid rectangle"), "{err}");
     }
 
     #[test]
     fn a_span_with_a_hole_is_refused() {
         let err = Layout::parse("a a a\na b a\na a a").unwrap_err();
-        assert!(err.contains("not one solid block"), "{err}");
+        assert!(err.contains("not one solid rectangle"), "{err}");
     }
 
     #[test]
@@ -218,38 +238,40 @@ mod tests {
     }
 
     #[test]
-    fn a_non_square_grid_is_refused() {
-        let err = Layout::parse("a b c\nd e f").unwrap_err();
-        assert!(err.contains("must be square"), "{err}");
+    fn a_rectangular_grid_is_accepted() {
+        let layout = Layout::parse("a b c\nd e f").unwrap();
+        assert_eq!((layout.width, layout.height), (3, 2));
     }
 
     #[test]
     fn nine_viewports_infer_a_three_by_three_grid() {
         let layout = Layout::inferred(9);
-        assert_eq!(layout.size, 3);
+        assert_eq!((layout.width, layout.height), (3, 3));
         assert_eq!(layout.slots.len(), 9);
         assert_eq!(
             layout.slots[8].1,
             Cell {
                 col: 2,
                 row: 2,
-                span: 1
+                width: 1,
+                height: 1
             }
         );
     }
 
     #[test]
     fn five_viewports_infer_a_grid_with_room_to_spare() {
-        // Not a 3x2: the cells have to stay square, so the grid does too, and
-        // the last four cells are simply background.
+        // The inferred grid remains square for compatibility; the last four
+        // cells are simply background.
         let layout = Layout::inferred(5);
-        assert_eq!(layout.size, 3);
+        assert_eq!((layout.width, layout.height), (3, 3));
         assert_eq!(
             layout.slots[4].1,
             Cell {
                 col: 1,
                 row: 1,
-                span: 1
+                width: 1,
+                height: 1
             }
         );
     }

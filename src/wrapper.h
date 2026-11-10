@@ -20,3 +20,5 @@
 #include <libavutil/hwcontext_drm.h>
 #include <libavutil/pixfmt.h>
 #include <linux/cec.h>
+
+AVCodecParameters *viewpie_stream_codecpar(AVFormatContext *format, int index);

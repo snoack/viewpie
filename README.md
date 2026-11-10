@@ -138,9 +138,23 @@ displays:
 
 The names are what the log calls each camera. A viewport names the feeds it
 shows, and any number of viewports, on either display, may name the same one.
+To crop a feed in the grid, write it as a mapping and give `crop` the pixel
+rectangle `[x, y, w, h]`, measured from the standard URL's decoded frame
+top-left. The rectangle must fit that stream's decoded size. It affects only
+the standard URL; a separate `fullscreen_url` is shown uncropped:
 
-Anything else is drawn as a picture. A name repeated over a square block of
-cells spans them, and `.` leaves a cell empty:
+```yaml
+feeds:
+  porch:
+    url: rtsp://10.0.0.5:7447/porch
+    crop: [320, 180, 1280, 720]
+```
+
+Anything else is drawn as a picture. A name repeated over a rectangular block
+of cells spans them, and `.` leaves a cell empty. The grid itself may be
+rectangular. For example, four equal sections with the top-right section split
+into two half-height viewports can be drawn on a 4x4 grid: the two smaller
+viewports together occupy the same area as each other section.
 
 ```yaml
 spacing: 1                  # background pixels between neighbouring viewports
@@ -154,9 +168,10 @@ feeds:
 
 displays:
   - layout: |
-      a a b
-      a a c
-      d e .
+      a a b b
+      a a c c
+      d d e e
+      d d e e
 
     viewports:
       - slot: a
@@ -172,11 +187,11 @@ displays:
         feeds: [garage, street]
 ```
 
-A layout that does not add up, such as a slot spanning two cells by one or
-named in two places, is refused at startup naming the slot, rather than drawn
-subtly wrong. So is a key that means nothing: a misspelled `conector` would
-otherwise leave the wall on the wrong screen with nothing in the log. And so
-is a feed no viewport shows, or a viewport naming one that does not exist.
+A layout that does not add up, such as a slot named in two disconnected
+places, is refused at startup naming the slot, rather than drawn subtly wrong.
+So is a key that means nothing: a misspelled `conector` would otherwise leave
+the wall on the wrong screen with nothing in the log. And so is a feed no
+viewport shows, or a viewport naming one that does not exist.
 
 `rtsps://` urls work as they come, including the `?enableSrtp` form a UniFi
 Protect recorder hands out, with no transport or certificate settings to
