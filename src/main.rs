@@ -46,12 +46,15 @@ use std::time::{Duration, Instant};
 struct Source {
     /// What the logs call this feed, as the configuration names it.
     name: String,
+    /// The source rectangle to show, if the configuration crops this feed.
+    crop: Option<config::Crop>,
     /// The newest frame this feed has decoded.
     ///
-    /// One lock for the framebuffer and its size together, because they are
-    /// only meaningful as a pair: reading them separately can hand the commit
-    /// loop one frame's buffer with another frame's dimensions, and a source
-    /// rectangle larger than the buffer is refused with EINVAL.
+    /// One lock for the framebuffer and its source rectangle together,
+    /// because they are only meaningful as a pair: reading them separately
+    /// can hand the commit loop one frame's buffer with another frame's
+    /// dimensions, and a source rectangle larger than the buffer is refused
+    /// with EINVAL.
     ///
     /// Shared rather than copied out: a commit takes its own reference to
     /// what it names, so whatever the feed publishes afterwards, the
@@ -70,9 +73,10 @@ struct Source {
 
 impl Source {
     /// A feed that has not decoded anything yet.
-    fn new(name: &str) -> Self {
+    fn new(name: &str, crop: Option<config::Crop>) -> Self {
         Source {
             name: name.to_string(),
+            crop,
             shown: Mutex::new(None),
             stats: Arc::default(),
             wanted: AtomicBool::new(true),
@@ -88,12 +92,12 @@ impl Source {
     }
 
     /// A camera's stream for fullscreen, which waits to be wanted before it
-    /// connects at all.
+    /// connects at all. It is not cropped.
     fn on_demand(name: &str) -> Self {
         Source {
             wanted: AtomicBool::new(false),
             on_demand: true,
-            ..Source::new(name)
+            ..Source::new(name, None)
         }
     }
 }
@@ -294,7 +298,8 @@ fn millis(d: Duration) -> u64 {
     d.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-/// A framebuffer, the frame that owns its memory, and the size to read it at.
+/// A framebuffer, the frame that owns its memory, and the source rectangle to
+/// read from it.
 ///
 /// Every holder keeps both alive: the source until a newer frame replaces it,
 /// and each display from the commit that names it until the flip after the
@@ -302,6 +307,8 @@ fn millis(d: Duration) -> u64 {
 /// has to know who else might still be scanning a buffer out.
 struct Shown {
     fb: Arc<Fb>,
+    src_x: u32,
+    src_y: u32,
     width: u32,
     height: u32,
     /// Dropping the frame returns its capture buffer to the decoder. None
@@ -750,7 +757,7 @@ fn run(config: &Config) -> Result<(), String> {
     let sources: Vec<Arc<Source>> = config
         .feeds
         .iter()
-        .map(|f| Arc::new(Source::new(&f.name)))
+        .map(|f| Arc::new(Source::new(&f.name, f.crop)))
         .collect();
     // And one per stream for fullscreen, by the feed's index, which connects
     // only while a display shows its camera that way.
@@ -982,24 +989,19 @@ fn build(
         )
     })?;
 
-    // The grid is square in cells, so a cell is the display divided by the
-    // layout's size. On a 16:9 screen that makes each cell 16:9 too, which is
-    // what a camera wants.
-    let grid = display.layout.size;
-    let cell_w = mode_w / grid;
-    let cell_h = mode_h / grid;
+    // Each grid cell maps to the same fraction of the display in its own
+    // direction. The grid may be rectangular, and slots may span any solid
+    // rectangle of cells.
+    let grid_w = display.layout.width;
+    let grid_h = display.layout.height;
+    let cell_w = mode_w / grid_w;
+    let cell_h = mode_h / grid_h;
 
-    // A gap wider than the cell it is taken out of would leave a viewport no
-    // pixels at all: crtc_w below is a cell minus the gap, which underflows
-    // and wraps to something near four billion, and the commit is refused
-    // with an EINVAL that says nothing about spacing. Checked against the
-    // real cell size rather than at parse time, because how large a cell is
-    // depends on the mode, which is not known until the display is up.
-    if display.spacing >= cell_w.min(cell_h) {
+    if cell_w == 0 || cell_h == 0 {
         return Err(format!(
-            "a spacing of {} leaves no room in a {cell_w}x{cell_h} cell on {}; \
-             the wall is {grid} cells across a {mode_w}x{mode_h} display",
-            display.spacing, out.name
+            "the {grid_w}x{grid_h} layout has more cells than pixels on the \
+             {mode_w}x{mode_h} display {}",
+            out.name
         ));
     }
 
@@ -1007,27 +1009,43 @@ fn build(
     let mut viewports: Vec<Viewport> = Vec::new();
 
     for (i, viewport) in display.viewports.iter().enumerate() {
-        let (_, cell) = &display.layout.slots[viewport.slot];
+        let (slot_name, cell) = &display.layout.slots[viewport.slot];
         let props = card.plane_props(planes[i])?;
 
         // The gap is taken off the right and bottom of each viewport, so it
         // falls between neighbours. An edge that meets the display rather than
         // another viewport keeps its pixels: a border around the wall is not a
         // seam, and nothing is on the other side of it.
-        let touches_right = cell.col + cell.span == grid;
-        let touches_bottom = cell.row + cell.span == grid;
+        let touches_right = cell.col + cell.width == grid_w;
+        let touches_bottom = cell.row + cell.height == grid_h;
         let gap_w = if touches_right { 0 } else { display.spacing };
         let gap_h = if touches_bottom { 0 } else { display.spacing };
+        let slot_w = cell.width * cell_w;
+        let slot_h = cell.height * cell_h;
+        let Some(crtc_w) = slot_w.checked_sub(gap_w).filter(|&w| w > 0) else {
+            return Err(format!(
+                "spacing {} leaves no room in slot '{}' on {} ({} pixels wide)",
+                display.spacing, slot_name, out.name, slot_w
+            ));
+        };
+        let Some(crtc_h) = slot_h.checked_sub(gap_h).filter(|&h| h > 0) else {
+            return Err(format!(
+                "spacing {} leaves no room in slot '{}' on {} ({} pixels high)",
+                display.spacing, slot_name, out.name, slot_h
+            ));
+        };
 
         viewports.push(Viewport {
             plane: planes[i],
             props,
             crtc_x: (cell.col * cell_w) as i32,
             crtc_y: (cell.row * cell_h) as i32,
-            crtc_w: cell.span * cell_w - gap_w,
-            crtc_h: cell.span * cell_h - gap_h,
+            crtc_w,
+            crtc_h,
             gap_w,
             gap_h,
+            src_x: 0,
+            src_y: 0,
             // Filled in once the feed's real size is known.
             src_w: 0,
             src_h: 0,
@@ -1328,6 +1346,8 @@ fn collect_ready(
         };
         // Never zero: feed_session skips a frame with no visible pixels.
         let mut t = viewports[i];
+        t.src_x = shown.src_x;
+        t.src_y = shown.src_y;
         t.src_w = shown.width;
         t.src_h = shown.height;
         tap.count(gen, returning);
@@ -1404,6 +1424,8 @@ fn collect_fullscreen(
                     crtc_h: height,
                     gap_w: 0,
                     gap_h: 0,
+                    src_x: shown.src_x,
+                    src_y: shown.src_y,
                     src_w: shown.width,
                     src_h: shown.height,
                     ..*first
@@ -1804,6 +1826,21 @@ fn feed_session(
         if w == 0 || h == 0 {
             continue;
         }
+        let (src_x, src_y, source_width, source_height) = match source.crop {
+            Some(crop) => {
+                let right = crop.x.checked_add(crop.width);
+                let bottom = crop.y.checked_add(crop.height);
+                if right.is_none_or(|right| right > w) || bottom.is_none_or(|bottom| bottom > h) {
+                    return Err(format!(
+                        "crop [{}, {}, {}, {}] is outside the decoded frame {w}x{h}",
+                        crop.x, crop.y, crop.width, crop.height
+                    )
+                    .into());
+                }
+                (crop.x, crop.y, crop.width, crop.height)
+            }
+            None => (0, 0, w, h),
+        };
         let (fb, frame) = unsafe {
             // Report the path once, and again whenever it changes: a decoder
             // that starts on dmabufs and later hands back pixels sends every
@@ -1910,8 +1947,10 @@ fn feed_session(
         // after, so the buffer is not handed back while it is being read.
         *source.shown.lock().unwrap() = Some(Arc::new(Shown {
             fb,
-            width: w,
-            height: h,
+            src_x,
+            src_y,
+            width: source_width,
+            height: source_height,
             _frame: frame,
         }));
         // Published last, and with Release, so the commit loop never sees a
@@ -2314,6 +2353,8 @@ mod tests {
             crtc_y: 0,
             crtc_w: 640,
             crtc_h: 360,
+            src_x: 0,
+            src_y: 0,
             src_w: 0,
             src_h: 0,
             gap_w: 0,
@@ -2447,7 +2488,7 @@ mod tests {
         // Neither stream has a frame: a camera whose stream for fullscreen
         // is still connecting, and whose feed has gone away too.
         let camera = Camera {
-            feed: Arc::new(Source::new("porch")),
+            feed: Arc::new(Source::new("porch", None)),
             fullscreen: Some(Arc::new(Source::on_demand("porch (fullscreen)"))),
         };
         let size = (1920, 1080);
@@ -2519,7 +2560,7 @@ mod tests {
     fn rotating(feeds: usize, interval_ms: u64) -> Feeds {
         Feeds::new(
             (0..feeds)
-                .map(|n| Tap::new(Arc::new(Source::new(&format!("feed{n}")))))
+                .map(|n| Tap::new(Arc::new(Source::new(&format!("feed{n}"), None))))
                 .collect(),
             Duration::from_millis(interval_ms),
         )
@@ -2554,7 +2595,7 @@ mod tests {
     /// thousands.
     #[test]
     fn frames_published_off_screen_are_not_skipped() {
-        let mut tap = Tap::new(Arc::new(Source::new("feed")));
+        let mut tap = Tap::new(Arc::new(Source::new("feed", None)));
         tap.count(1, true);
         tap.count(2, false);
         tap.count(4, false);
@@ -2581,7 +2622,7 @@ mod tests {
     /// on screen in it, whether or not the one before was said.
     #[test]
     fn a_tap_reports_its_rate_since_the_report_before() {
-        let mut tap = Tap::new(Arc::new(Source::new("feed")));
+        let mut tap = Tap::new(Arc::new(Source::new("feed", None)));
         let s = Duration::from_secs;
         for gen in 1..=250 {
             tap.count(gen, gen == 1);

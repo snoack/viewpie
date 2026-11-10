@@ -26,7 +26,7 @@ fn main() {
         .clang_args(&cflags)
         // Only what the crate actually calls. Binding the whole of libav
         // produces tens of thousands of items and a minute of build time.
-        .allowlist_function("av_.*|avcodec_.*|avformat_.*")
+        .allowlist_function("av_.*|avcodec_.*|avformat_.*|viewpie_stream_codecpar")
         .allowlist_type("AV.*|cec_.*")
         .allowlist_var("AV_.*|AVERROR.*|CEC_.*")
         .derive_default(true)
@@ -39,8 +39,32 @@ fn main() {
         .write_to_file(out.join("bindings.rs"))
         .expect("could not write bindings.rs");
 
+    compile_stream_helper(&cflags, &out);
+
     println!("cargo:rerun-if-changed=src/wrapper.h");
+    println!("cargo:rerun-if-changed=src/av_stream.c");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn compile_stream_helper(cflags: &[String], out: &std::path::Path) {
+    let object = out.join("av_stream.o");
+    let target = std::env::var("TARGET").expect("Cargo did not set TARGET");
+    let target_cc = format!("CC_{}", target.replace('-', "_"));
+    let compiler = std::env::var_os(&target_cc)
+        .or_else(|| std::env::var_os("CC"))
+        .unwrap_or_else(|| "cc".into());
+    println!("cargo:rerun-if-env-changed={target_cc}");
+    println!("cargo:rerun-if-env-changed=CC");
+    let status = Command::new(compiler)
+        .args(cflags)
+        .args(["-c", "src/av_stream.c", "-o"])
+        .arg(&object)
+        .status()
+        .expect("could not run the C compiler for the libav stream accessor");
+    if !status.success() {
+        panic!("could not compile the libav stream accessor");
+    }
+    println!("cargo:rustc-link-arg={}", object.display());
 }
 
 fn pkg_config(lib: &str, what: &str) -> Vec<String> {

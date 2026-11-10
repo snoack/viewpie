@@ -51,9 +51,8 @@ pub struct PlaneProps {
 }
 
 /// A viewport's destination on screen and the source rectangle it takes from
-/// its feed. The seam viewwall needed a videocrop element for is just
-/// src_w/src_h here: a property, not a pipeline element, and no caps to
-/// renegotiate.
+/// its feed. Cropping and seams are expressed by SRC_X/Y/W/H properties, not
+/// pipeline elements, so they need no caps renegotiation.
 #[derive(Debug, Clone, Copy)]
 pub struct Viewport {
     pub plane: plane::Handle,
@@ -62,6 +61,8 @@ pub struct Viewport {
     pub crtc_y: i32,
     pub crtc_w: u32,
     pub crtc_h: u32,
+    pub src_x: u32,
+    pub src_y: u32,
     pub src_w: u32,
     pub src_h: u32,
     /// How much this viewport's destination was inset to leave a seam. The
@@ -623,8 +624,14 @@ impl Card {
             for (prop, value) in [
                 (p.fb_id, property::Value::Framebuffer(Some(fb))),
                 (p.crtc_id, property::Value::CRTC(Some(crtc))),
-                (p.src_x, property::Value::UnsignedRange(0)),
-                (p.src_y, property::Value::UnsignedRange(0)),
+                (
+                    p.src_x,
+                    property::Value::UnsignedRange((viewport.src_x as u64) << 16),
+                ),
+                (
+                    p.src_y,
+                    property::Value::UnsignedRange((viewport.src_y as u64) << 16),
+                ),
                 (
                     p.src_w,
                     property::Value::UnsignedRange((src_w as u64) << 16),
